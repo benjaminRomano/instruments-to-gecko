@@ -49,12 +49,12 @@ data class GeckoProfile(
 
 data class GeckoThread(
     val name: String,
-    val registerTime: Int = 0,
+    val registerTime: Long = 0,
     val processType: String = "default",
     val processName: String? = null,
-    val unregisterTime: Int? = null,
+    val unregisterTime: Long? = null,
     val tid: Int,
-    val pid: Int,
+    val pid: Long,
     val markers: GeckoMarkers = GeckoMarkers(),
     val samples: GeckoSamples,
     val frameTable: GeckoFrameTable,
@@ -77,9 +77,9 @@ data class GeckoMarkersSchema(
 )
 
 data class GeckoMeta(
-    val version: Int = 24,
-    val startTime: Int = 0,
-    val shutdownTime: Int? = null,
+    val version: Long = 24,
+    val startTime: Long,
+    val shutdownTime: Long? = null,
     val categories: List<Category> = DEFAULT_CATEGORIES,
     val markerSchema: List<Any> = emptyList(),
     val interval: Int = 1,
@@ -108,7 +108,7 @@ data class GeckoSampleSchema(
 )
 
 class GeckoSample(
-    val stackId: Int?,
+    val stackId: Long?,
     val timeMs: Long,
     val responsiveness: Int = 0
 ) {
@@ -127,8 +127,8 @@ data class GeckoStackTableSchema(
 
 data class GeckoStack(
     // Id of stack with matching prefix
-    val prefixId: Int?,
-    val frameId: Int,
+    val prefixId: Long?,
+    val frameId: Long,
     val category: Int = 0,
 ) {
     fun toData() = arrayOf(prefixId, frameId, category)
@@ -152,7 +152,7 @@ data class GeckoFrameTableSchema(
 )
 
 data class GeckoFrame(
-    val stringId: Int,
+    val stringId: Long,
     val relevantForJS: Boolean = false,
     val innerWindowID: Int = 0,
     val implementation: String? = null,

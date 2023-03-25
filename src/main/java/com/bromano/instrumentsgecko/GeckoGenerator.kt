@@ -1,51 +1,100 @@
 package com.bromano.instrumentsgecko
 
+import java.util.Collections
+import java.lang.Math
+
+private val libraryComparator = Comparator<Library> {libA, libB ->
+    when {
+        (libA.loadAddress > libB.loadAddress) -> 1
+        (libA.loadAddress < libB.loadAddress) -> -1
+        (libA.loadAddress == libB.loadAddress) -> 0
+        else -> 0
+    }
+
+}
 
 /**
  * Generate a Gecko File
  */
 object GeckoGenerator {
 
+    fun getLibraryPathForSymbol(libraryList: List<Library>, symbol: SymbolEntry): String? {
+        val dummyLib = Library("", "", symbol.address, "")
+        val position = Collections.binarySearch(libraryList, dummyLib, libraryComparator)
+
+        /** If key is not present, Collections.binarySearch returns "(-(insertion point) - 1)".
+         *  Since we're searching through a list of loaded libraries, we don't expect
+         *  the symbol to match any of the values exactly. Instead, we'll look for the library
+         *  that contains this address.
+         *
+         * For example, consider the following symbol lookup on the given sorted library list:
+         *                       symbol@0x1000052
+         *                             |
+         *                     v<<<<<<<|
+         *     +---------------+---------------+---------------+
+         *     | dyld          | Foundation    | UIKit         |
+         *     +---------------+---------------+---------------+
+         *     0x1000000        0x1a00000        0x1f00000
+         *
+         *      Though it matches against insert position == 1, we should attribute this
+         *      symbol to dyld.
+         */
+
+        if (position >= 0) {
+            // Found an exact match. This is unlikely, but should still be handled.
+            val res = libraryList.elementAt(position).path
+            return res
+        }
+
+        // Inverse operation of -(insertion point) - 1
+        val insertPosition = Math.abs(position) - 1
+        if (insertPosition == 0) {
+            return null
+        }
+        val res = libraryList.elementAt(insertPosition - 1).path
+        return res
+
+    }
     fun createGeckoProfile(
         app: String,
         samples: List<InstrumentsSample>,
-        symbolsInfo: SymbolsInfo
+        symbolsInfo: List<Library>,
     ): GeckoProfile {
         val threads = samples.groupBy {
-            it.threadId
+            it.thread.tid
         }.map { (threadId, samples) ->
             val frameTable = mutableListOf<GeckoFrame>()
             val stackTable = mutableListOf<GeckoStack>()
             val stringTable = mutableListOf<String>()
 
-            val frameMap = mutableMapOf<String, Int>()
+            val frameMap = mutableMapOf<String, Long>()
             // Stored as (stackPrefixId, frameId)
-            val stackMap = mutableMapOf<Pair<Int?, Int>, Int>()
+            val stackMap = mutableMapOf<Pair<Long?, Long>, Long>()
+            val stringMap = mutableMapOf<String, Long>()
 
-            val stringMap = mutableMapOf<String, Int>()
 
             val geckoSamples = samples.map {
 
                 // Intern Frame
                 val frameIds = it.backtrace.map { frame ->
                     // Best effort try to find dsym string name
-                    val dsymFrame = symbolsInfo.addressToSymbol.getOrDefault(frame, frame)
+                    val dsymFrame = frame.name
 
                     // Intern String
                     val stringId = stringMap.getOrPut(dsymFrame) {
-                        val stringId = stringTable.size
+                        val stringId = stringTable.size.toLong()
                         stringTable.add(dsymFrame)
                         stringId
                     }
 
                     frameMap.getOrPut(dsymFrame) {
-                        val frameId = frameTable.size
+                        val frameId = frameTable.size.toLong()
                         frameTable.add(
                             GeckoFrame(
                                 stringId = stringId,
-                                category = getCategory(
+                                category = getLibraryCategory(
                                     app,
-                                    symbolsInfo.symbolToLib.getOrDefault(dsymFrame, null)
+                                    getLibraryPathForSymbol(symbolsInfo, frame)
                                 )
                             )
                         )
@@ -54,10 +103,10 @@ object GeckoGenerator {
                 }
 
                 // Intern Stacks
-                var prefixId: Int? = null
+                var prefixId: Long? = null
                 frameIds.reversed().forEach { frameId ->
                     prefixId = stackMap.getOrPut(Pair(prefixId, frameId)) {
-                        val stackId = stackTable.size
+                        val stackId = stackTable.size.toLong()
                         stackTable.add(
                             GeckoStack(
                                 prefixId,
@@ -75,7 +124,7 @@ object GeckoGenerator {
             }
 
             GeckoThread(
-                name = samples.firstOrNull()?.threadName ?: "<unknown>",
+                name = samples.firstOrNull()?.thread?.threadName ?: "<unknown>",
                 tid = threadId,
                 // Currently, we only support single process runs
                 pid = 0,
@@ -84,24 +133,26 @@ object GeckoGenerator {
                 frameTable = GeckoFrameTable(data = frameTable.map { it.toData() }),
                 stackTable = GeckoStackTable(data = stackTable.map { it.toData() }),
             )
+
         }
 
+        val traceStartTime = samples.map { it.sampleTime }.minOrNull() ?: 0
 
         return GeckoProfile(
-            meta = GeckoMeta(),
+            meta = GeckoMeta(startTime = traceStartTime),
             threads = threads,
         )
     }
 
-    private fun getCategory(app: String, lib: Lib?): Int {
-        if (lib == null) {
+    private fun getLibraryCategory(app: String, library: String?): Int {
+        if (library == null) {
             return OTHER_CATEGORY
         }
-
         return when {
-            lib.name.contains(app) -> USER_CATEGORY
-            lib.name.startsWith("/System") -> FRAMEWORK_CATEGORY
-            lib.name.startsWith("/usr") -> LIBRARY_CATEGORY
+            library.contains(app) -> USER_CATEGORY
+            library.contains("/System/Library/") -> FRAMEWORK_CATEGORY
+            library.contains("/Symbols/usr/") -> LIBRARY_CATEGORY
+            library.startsWith("/usr") -> LIBRARY_CATEGORY
             else -> OTHER_CATEGORY
         }
     }
