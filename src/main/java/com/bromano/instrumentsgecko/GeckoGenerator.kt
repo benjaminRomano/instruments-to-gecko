@@ -1,12 +1,11 @@
 package com.bromano.instrumentsgecko
 
-import java.util.Collections
-import java.lang.Math
+import java.util.*
 
 // The multiplier used for estimating whether the thread is idle instead of preempted or blocked
 const val THREAD_IDLE_MULTIPLIER = 5
 
-private val libraryComparator = Comparator<Library> {libA, libB ->
+private val libraryComparator = Comparator<Library> { libA, libB ->
     when {
         (libA.loadAddress > libB.loadAddress) -> 1
         (libA.loadAddress < libB.loadAddress) -> -1
@@ -58,6 +57,7 @@ object GeckoGenerator {
         return res
 
     }
+
     fun createGeckoProfile(
         app: String,
         samples: List<InstrumentsSample>,

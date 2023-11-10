@@ -16,6 +16,27 @@ import javax.xml.transform.stream.StreamResult
 import javax.xml.xpath.XPathConstants
 import javax.xml.xpath.XPathFactory
 
+private const val THREAD_TAG = "thread"
+private const val THREAD_STATE_TAG = "thread-state"
+private const val WEIGHT_TAG = "weight"
+const val SAMPLE_TIME_TAG = "sample-time"
+private const val BACKTRACE_TAG = "backtrace"
+private const val TID_TAG = "tid"
+private const val FRAME_TAG = "frame"
+private const val BINARY_TAG = "binary"
+private const val ROW_TAG = "row"
+private const val RUN_TAG = "run"
+private const val TABLE_TAG = "table"
+private const val VM_OP_TAG = "vm-op"
+const val START_TIME_TAG = "start-time"
+
+const val TIME_PROFILE_SCHEMA = "time-profile"
+const val VIRTUAL_MEMORY_SCHEMA = "virtual-memory"
+private const val THREAD_STATE_SCHEMA = "thread-state"
+const val SYSCALL_SCHEMA = "syscall"
+
+private const val NUMBER_ATTR = "number"
+private const val SCHEMA_ATTR = "schema"
 
 
 /**
@@ -86,28 +107,6 @@ data class SymbolEntry(
     }
 }
 
-private const val THREAD_TAG = "thread"
-private const val THREAD_STATE_TAG = "thread-state"
-private const val WEIGHT_TAG = "weight"
-const val SAMPLE_TIME_TAG = "sample-time"
-private const val BACKTRACE_TAG = "backtrace"
-private const val TID_TAG = "tid"
-private const val FRAME_TAG = "frame"
-private const val BINARY_TAG = "binary"
-private const val ROW_TAG = "row"
-private const val RUN_TAG = "run"
-private const val TABLE_TAG = "table"
-private const val VM_OP_TAG = "vm-op"
-const val START_TIME_TAG = "start-time"
-
-const val TIME_PROFILE_SCHEMA = "time-profile"
-const val VIRTUAL_MEMORY_SCHEMA = "virtual-memory"
-private const val THREAD_STATE_SCHEMA = "thread-state"
-const val SYSCALL_SCHEMA = "syscall"
-
-private const val NUMBER_ATTR = "number"
-private const val SCHEMA_ATTR = "schema"
-
 /**
  * Utilities for parsing Instruments files
  */
@@ -167,11 +166,12 @@ object InstrumentsParser {
         val runNode = queryXCTraceTOC(input)
             .getElementsByTagName(RUN_TAG)
             .asSequence()
-            .firstOrNull() {
+            .firstOrNull {
                 it.getAttrValue(NUMBER_ATTR) == runNum.toString()
             }
 
-       val runElement = runNode as? Element ?: throw IllegalStateException("Cannot find run $runNum in table of contents")
+        val runElement =
+            runNode as? Element ?: throw IllegalStateException("Cannot find run $runNum in table of contents")
 
         val timeProfileNodes = runElement.getElementsByTagName(TABLE_TAG)
             .asSequence()
@@ -234,11 +234,12 @@ object InstrumentsParser {
     fun loadSamples(schema: String, timeTag: String, input: Path, runNum: Int = 1): List<InstrumentsSample> {
         val document = queryXCTrace(input, "/trace-toc[1]/run[$runNum]/data[1]/table[@schema=\"$schema\"]")
 
-        // Map of thread ids to last sample time
-        val timeSinceLastSample = mutableMapOf<Int, Long>()
-
         val originalNodeCache = mutableMapOf<String, Node>()
-        preloadTags(document, listOf(BACKTRACE_TAG, timeTag, VM_OP_TAG, WEIGHT_TAG, THREAD_TAG, TID_TAG), originalNodeCache)
+        preloadTags(
+            document,
+            listOf(BACKTRACE_TAG, timeTag, VM_OP_TAG, WEIGHT_TAG, THREAD_TAG, TID_TAG),
+            originalNodeCache
+        )
 
         val previousBacktraces = mutableMapOf<String, SymbolEntry>()
         return document.getElementsByTagName(BACKTRACE_TAG)
@@ -262,8 +263,8 @@ object InstrumentsParser {
 
                 val threadName = threadNode.getFmtAttrValue() ?: "<unknown>"
 
-                val threadId = threadNode.getOptionalFirstOriginalNodeByTag(document, TID_TAG, originalNodeCache)
-                    ?.getChildValue()?.toIntOrNull() ?: -1
+                val threadId = threadNode.getFirstOriginalNodeByTag(document, TID_TAG, originalNodeCache)
+                    .getChildValue()?.toIntOrNull() ?: -1
 
                 // There can be multiple text address "fragments"
                 // The first fragment contains addresses that are unique to this backtrace
@@ -305,7 +306,7 @@ object InstrumentsParser {
                 // Append virtual memory operation onto callstack if it exists (e.g. Page Fault)
                 rowNode.getOptionalFirstOriginalNodeByTag(document, VM_OP_TAG, originalNodeCache)
                     ?.getFmtAttrValue()
-                    ?.let {backtrace.add(0, SymbolEntry(VIRTUAL_MEMORY_ADDR, it)) }
+                    ?.let { backtrace.add(0, SymbolEntry(VIRTUAL_MEMORY_ADDR, it)) }
 
                 InstrumentsSample(
                     thread = ThreadDescription(threadName, threadId),
@@ -331,7 +332,7 @@ object InstrumentsParser {
             .filter {
                 it.parentNode?.nodeName == ROW_TAG &&
                         getOriginalNode(document, it, originalNodeCache).getIdAttrValue() == "Idle"
-            }.map {threadStateNode ->
+            }.map { threadStateNode ->
                 val rowNode = threadStateNode.parentNode
                 val sampleTime = rowNode.getFirstOriginalNodeByTag(document, START_TIME_TAG, originalNodeCache)
                     .asTimeValue()
