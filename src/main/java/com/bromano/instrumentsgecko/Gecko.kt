@@ -10,12 +10,16 @@ const val USER_CATEGORY = 0
 const val FRAMEWORK_CATEGORY = 1
 const val LIBRARY_CATEGORY = 2
 const val OTHER_CATEGORY = 3
+const val VIRTUAL_MEMORY_CATEGORY = 4
+
+val VIRTUAL_MEMORY_ADDR = ULong.MAX_VALUE - 1UL
 
 val DEFAULT_CATEGORIES = listOf(
     Category("User", "yellow", listOf("Other")),
     Category("Framework", "green", listOf("Other")),
     Category("System", "orange", listOf("Other")),
     Category("Other", "grey", listOf("Other")),
+    Category("Virtual Memory", "blue", listOf("Other")),
 )
 
 /**
@@ -78,7 +82,7 @@ data class GeckoMarkersSchema(
 
 data class GeckoMeta(
     val version: Long = 24,
-    val startTime: Long,
+    val startTime: Double,
     val shutdownTime: Long? = null,
     val categories: List<Category> = DEFAULT_CATEGORIES,
     val markerSchema: List<Any> = emptyList(),
@@ -104,15 +108,15 @@ data class GeckoSamples(
 data class GeckoSampleSchema(
     val stack: Int = 0,
     val time: Int = 1,
-    val responsiveness: Int = 2,
+    val eventDelay: Int = 2,
 )
 
 class GeckoSample(
     val stackId: Long?,
-    val timeMs: Long,
-    val responsiveness: Int = 0
+    val timeMs: Double,
+    val eventDelay: Double = 0.0
 ) {
-    fun toData() = arrayOf(stackId, timeMs, responsiveness)
+    fun toData() = arrayOf(stackId, timeMs, eventDelay)
 }
 
 data class GeckoStackTable(
