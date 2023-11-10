@@ -1,9 +1,11 @@
 package com.bromano.instrumentsgecko
 
-import java.util.Collections
-import java.lang.Math
+import java.util.*
 
-private val libraryComparator = Comparator<Library> {libA, libB ->
+// The multiplier used for estimating whether the thread is idle instead of preempted or blocked
+const val THREAD_IDLE_MULTIPLIER = 5
+
+private val libraryComparator = Comparator<Library> { libA, libB ->
     when {
         (libA.loadAddress > libB.loadAddress) -> 1
         (libA.loadAddress < libB.loadAddress) -> -1
@@ -55,11 +57,15 @@ object GeckoGenerator {
         return res
 
     }
+
     fun createGeckoProfile(
         app: String,
         samples: List<InstrumentsSample>,
         symbolsInfo: List<Library>,
+        timeProfilerSettings: InstrumentsSettings,
     ): GeckoProfile {
+        val interval = if (timeProfilerSettings.highFrequency) 1.0 else 5.0
+
         val threads = samples.groupBy {
             it.thread.tid
         }.map { (threadId, samples) ->
@@ -72,8 +78,9 @@ object GeckoGenerator {
             val stackMap = mutableMapOf<Pair<Long?, Long>, Long>()
             val stringMap = mutableMapOf<String, Long>()
 
+            var priorSample: InstrumentsSample? = null
 
-            val geckoSamples = samples.map {
+            val geckoSamples = samples.sortedBy { it.sampleTime }.flatMap {
 
                 // Intern Frame
                 val frameIds = it.backtrace.map { frame ->
@@ -94,6 +101,7 @@ object GeckoGenerator {
                                 stringId = stringId,
                                 category = getLibraryCategory(
                                     app,
+                                    frame,
                                     getLibraryPathForSymbol(symbolsInfo, frame)
                                 )
                             )
@@ -117,10 +125,36 @@ object GeckoGenerator {
                     }
                 }
 
-                GeckoSample(
+                val geckoSample = GeckoSample(
                     stackId = prefixId,
                     timeMs = it.sampleTime
                 )
+
+                if (timeProfilerSettings.hasThreadStates) {
+                    return@flatMap listOf(geckoSample)
+                }
+
+                // Without idle thread states, we cannot differentiate idle vs. pre-emprted, runnable or blocked states.
+                // Thus, we will over-represent the last callstack's weight when the thread transitions to idle.
+                // To mitigate this, we use a heuristic that if we haven't received a sample in a while, thre thread is
+                // likely idle, and we will automatically insert an idle sample.
+                val newGeckoSamples = priorSample?.let { prior ->
+                    val priorSampleEndTime = prior.sampleTime + prior.weightMs
+                    val delta = it.sampleTime - priorSampleEndTime
+                    if (delta > interval * THREAD_IDLE_MULTIPLIER) {
+                        listOf(
+                            GeckoSample(
+                                stackId = null,
+                                timeMs = priorSampleEndTime,
+                            ), geckoSample
+                        )
+                    } else {
+                        null
+                    }
+                } ?: listOf(geckoSample)
+
+                priorSample = it
+                newGeckoSamples
             }
 
             GeckoThread(
@@ -133,10 +167,9 @@ object GeckoGenerator {
                 frameTable = GeckoFrameTable(data = frameTable.map { it.toData() }),
                 stackTable = GeckoStackTable(data = stackTable.map { it.toData() }),
             )
-
         }
 
-        val traceStartTime = samples.map { it.sampleTime }.minOrNull() ?: 0
+        val traceStartTime = samples.map { it.sampleTime }.minOrNull() ?: 0.0
 
         return GeckoProfile(
             meta = GeckoMeta(startTime = traceStartTime),
@@ -144,8 +177,10 @@ object GeckoGenerator {
         )
     }
 
-    private fun getLibraryCategory(app: String, library: String?): Int {
-        if (library == null) {
+    private fun getLibraryCategory(app: String, frame: SymbolEntry, library: String?): Int {
+        if (frame.address == VIRTUAL_MEMORY_ADDR) {
+            return VIRTUAL_MEMORY_CATEGORY
+        } else if (library == null) {
             return OTHER_CATEGORY
         }
         return when {

@@ -2,7 +2,6 @@ package com.bromano.instrumentsgecko
 
 import com.github.ajalt.clikt.core.CliktCommand
 import com.github.ajalt.clikt.parameters.options.default
-import com.github.ajalt.clikt.parameters.options.flag
 import com.github.ajalt.clikt.parameters.options.option
 import com.github.ajalt.clikt.parameters.options.required
 import com.github.ajalt.clikt.parameters.types.int
@@ -40,28 +39,66 @@ class GeckoCommand : CliktCommand(help = "Convert Instruments Trace to Gecko For
         lateinit var samples: List<InstrumentsSample>
         lateinit var loadedImageList: List<Library>
 
-        // These operations take ~3s each so we parallelize them
-        Logger.timedLog("Loading Symbols and Load Address") {
-            val thread1 = thread(start = true) { samples = InstrumentsParser.loadSamples(input, runNum) }
-            val thread2 = thread(start = true) { loadedImageList = InstrumentsParser.sortedImageList(input, runNum)}
-            thread1.setUncaughtExceptionHandler { _, ex ->
-                ex.printStackTrace()
-                exitProcess(1)
+        var threadIdSamples: List<InstrumentsSample>? = null
+        var virtualMemorySamples: List<InstrumentsSample>? = null
+        var syscallSamples: List<InstrumentsSample>? = null
+
+        val timeProfilerSettings = InstrumentsParser.getInstrumentsSettings(input, runNum)
+
+        // xctrace queries can be quite slow so parallelize them
+        Logger.timedLog("Loading Symbols, Samples and Load Addresses...") {
+            val thread1 = thread(start = true) {
+                samples = InstrumentsParser.loadSamples(TIME_PROFILE_SCHEMA, SAMPLE_TIME_TAG, input, runNum)
             }
-            thread2.setUncaughtExceptionHandler { _, ex ->
-                ex.printStackTrace()
-                exitProcess(1)
-            }
+                .addUncaughtExceptionHandler()
+
+            val thread2 = thread(start = true) { loadedImageList = InstrumentsParser.sortedImageList(input, runNum) }
+                .addUncaughtExceptionHandler()
+
+            val thread3: Thread? = if (timeProfilerSettings.hasThreadStates) {
+                thread(start = true) { threadIdSamples = InstrumentsParser.loadIdleThreadSamples(input, runNum) }
+                    .addUncaughtExceptionHandler()
+            } else null
+
+            val thread4: Thread? = if (timeProfilerSettings.hasVirtualMemory) {
+                thread(start = true) {
+                    virtualMemorySamples =
+                        InstrumentsParser.loadSamples(VIRTUAL_MEMORY_SCHEMA, START_TIME_TAG, input, runNum)
+                }
+                    .addUncaughtExceptionHandler()
+            } else null
+
+            val thread5: Thread? = if (timeProfilerSettings.hasSyscalls) {
+                thread(start = true) {
+                    syscallSamples = InstrumentsParser.loadSamples(SYSCALL_SCHEMA, START_TIME_TAG, input, runNum)
+                }
+                    .addUncaughtExceptionHandler()
+            } else null
+
             thread1.join()
             thread2.join()
+            thread3?.join()
+            thread4?.join()
+            thread5?.join()
         }
 
+        val concatenatedSamples =
+            (syscallSamples ?: emptyList()) + (threadIdSamples ?: emptyList()) + (virtualMemorySamples
+                ?: emptyList()) + samples
+
         val profile = Logger.timedLog("Converting to Gecko format") {
-            GeckoGenerator.createGeckoProfile(app, samples, loadedImageList)
+            GeckoGenerator.createGeckoProfile(app, concatenatedSamples, loadedImageList, timeProfilerSettings)
         }
 
         Logger.timedLog("Gzipping and writing to disk") {
             profile.toFile(output)
+        }
+    }
+
+    private fun Thread.addUncaughtExceptionHandler() = also {
+        setUncaughtExceptionHandler { _, ex ->
+            ex.printStackTrace()
+            exitProcess(1)
         }
     }
 }

@@ -1,13 +1,42 @@
 package com.bromano.instrumentsgecko
 
 import org.w3c.dom.Document
+import org.w3c.dom.Element
 import org.w3c.dom.Node
 import org.w3c.dom.NodeList
 import org.xml.sax.InputSource
 import java.io.StringReader
+import java.io.StringWriter
 import java.nio.file.Path
 import javax.xml.parsers.DocumentBuilderFactory
-import kotlin.system.exitProcess
+import javax.xml.transform.OutputKeys
+import javax.xml.transform.TransformerFactory
+import javax.xml.transform.dom.DOMSource
+import javax.xml.transform.stream.StreamResult
+import javax.xml.xpath.XPathConstants
+import javax.xml.xpath.XPathFactory
+
+private const val THREAD_TAG = "thread"
+private const val THREAD_STATE_TAG = "thread-state"
+private const val WEIGHT_TAG = "weight"
+const val SAMPLE_TIME_TAG = "sample-time"
+private const val BACKTRACE_TAG = "backtrace"
+private const val TID_TAG = "tid"
+private const val FRAME_TAG = "frame"
+private const val BINARY_TAG = "binary"
+private const val ROW_TAG = "row"
+private const val RUN_TAG = "run"
+private const val TABLE_TAG = "table"
+private const val VM_OP_TAG = "vm-op"
+const val START_TIME_TAG = "start-time"
+
+const val TIME_PROFILE_SCHEMA = "time-profile"
+const val VIRTUAL_MEMORY_SCHEMA = "virtual-memory"
+private const val THREAD_STATE_SCHEMA = "thread-state"
+const val SYSCALL_SCHEMA = "syscall"
+
+private const val NUMBER_ATTR = "number"
+private const val SCHEMA_ATTR = "schema"
 
 
 /**
@@ -17,6 +46,20 @@ import kotlin.system.exitProcess
 data class ThreadDescription(
     val threadName: String,
     val tid: Int
+) {
+    override fun toString(): String {
+        return "$threadName (tid: $tid)"
+    }
+}
+
+data class InstrumentsSettings(
+    val highFrequency: Boolean,
+    val waitingThreads: Boolean,
+    val contextSwitches: Boolean,
+    val kernelCallstacks: Boolean,
+    val hasThreadStates: Boolean,
+    val hasVirtualMemory: Boolean,
+    val hasSyscalls: Boolean,
 )
 
 /**
@@ -26,9 +69,19 @@ data class ThreadDescription(
  */
 data class InstrumentsSample(
     val thread: ThreadDescription,
-    val sampleTime: Long,
+    val sampleTime: Double,
+    val weightMs: Double,
     val backtrace: List<SymbolEntry>
-)
+) {
+    override fun toString(): String {
+        return """
+        |Time: $sampleTime
+        |$thread:
+        |${"\t"}${backtrace.reversed().joinToString("\n\t")}
+        """.trimMargin()
+    }
+
+}
 
 /**
  * Library represents a loaded binary image. This can be the primary executable
@@ -48,15 +101,11 @@ data class Library(
 data class SymbolEntry(
     val address: ULong,
     val name: String,
-)
-
-private const val THREAD_TAG = "thread"
-private const val WEIGHT_TAG = "weight"
-private const val SAMPLE_TIME_TAG = "sample-time"
-private const val BACKTRACE_TAG = "backtrace"
-private const val TID_TAG = "tid"
-private const val FRAME_TAG = "frame"
-private const val BINARY_TAG = "binary"
+) {
+    override fun toString(): String {
+        return name
+    }
+}
 
 /**
  * Utilities for parsing Instruments files
@@ -94,7 +143,7 @@ object InstrumentsParser {
      */
     private fun createBinaryImageMapping(input: Path, runNum: Int = 1): Map<String, Library> {
         val idToLibrary = mutableMapOf<String, Library>()
-        val document = queryXCTrace(input, "/trace-toc[1]/run[$runNum]/data[1]/table[@schema=\"time-profile\"]")
+        val document = queryXCTrace(input, "/trace-toc[1]/run[$runNum]/data[1]/table[@schema=\"$TIME_PROFILE_SCHEMA\"]")
         document.getElementsByTagName(FRAME_TAG)
             .asSequence()
             .flatMap { it.childNodesSequence() }
@@ -113,8 +162,50 @@ object InstrumentsParser {
         return idToLibrary
     }
 
+    fun getInstrumentsSettings(input: Path, runNum: Int = 1): InstrumentsSettings {
+        val runNode = queryXCTraceTOC(input)
+            .getElementsByTagName(RUN_TAG)
+            .asSequence()
+            .firstOrNull {
+                it.getAttrValue(NUMBER_ATTR) == runNum.toString()
+            }
+
+        val runElement =
+            runNode as? Element ?: throw IllegalStateException("Cannot find run $runNum in table of contents")
+
+        val timeProfileNodes = runElement.getElementsByTagName(TABLE_TAG)
+            .asSequence()
+            .filter { it.getAttrValue(SCHEMA_ATTR) == TIME_PROFILE_SCHEMA }
+            .toList()
+
+        val hasThreadStates = runElement.getElementsByTagName(TABLE_TAG)
+            .asSequence()
+            .any { it.getAttrValue(SCHEMA_ATTR) == THREAD_STATE_SCHEMA }
+
+        val hasVirtualMemory = runElement.getElementsByTagName(TABLE_TAG)
+            .asSequence()
+            .any { it.getAttrValue(SCHEMA_ATTR) == VIRTUAL_MEMORY_SCHEMA }
+
+        val hasSyscalls = runElement.getElementsByTagName(TABLE_TAG)
+            .asSequence()
+            .any { it.getAttrValue(SCHEMA_ATTR) == SYSCALL_SCHEMA }
+
+
+        return InstrumentsSettings(
+            timeProfileNodes.any { it.getAttrValue("high-frequency-sampling") == "1" },
+            timeProfileNodes.any { it.getAttrValue("record-waiting-threads") == "1" },
+            timeProfileNodes.any { it.getAttrValue("context-switch-sampling") == "1" },
+            timeProfileNodes.any { it.getAttrValue("needs-kernel-callstack") == "1" },
+            hasThreadStates,
+            hasVirtualMemory,
+            hasSyscalls
+        )
+    }
+
     /**
      * Extract Instrument Samples from trace
+     *
+     * Note: Samples may not be in-order. In some scenarios, Instruments returns out-of-order data.
      *
      * Example:
      * <row>
@@ -140,58 +231,40 @@ object InstrumentsParser {
      *     </backtrace>
      *  </row>
      */
-    fun loadSamples(input: Path, runNum: Int = 1): List<InstrumentsSample> {
-        val document = queryXCTrace(input, "/trace-toc[1]/run[$runNum]/data[1]/table[@schema=\"time-profile\"]")
-
-        // Map of thread ids to last sample time
-        val timeSinceLastSample = mutableMapOf<Int, Long>()
+    fun loadSamples(schema: String, timeTag: String, input: Path, runNum: Int = 1): List<InstrumentsSample> {
+        val document = queryXCTrace(input, "/trace-toc[1]/run[$runNum]/data[1]/table[@schema=\"$schema\"]")
 
         val originalNodeCache = mutableMapOf<String, Node>()
-        preloadTags(document, listOf(BACKTRACE_TAG, SAMPLE_TIME_TAG, WEIGHT_TAG, THREAD_TAG, TID_TAG), originalNodeCache)
+        preloadTags(
+            document,
+            listOf(BACKTRACE_TAG, timeTag, VM_OP_TAG, WEIGHT_TAG, THREAD_TAG, TID_TAG),
+            originalNodeCache
+        )
 
         val previousBacktraces = mutableMapOf<String, SymbolEntry>()
         return document.getElementsByTagName(BACKTRACE_TAG)
             .asSequence()
-            .flatMap { backtraceNode ->
+            .map { backtraceNode ->
                 val rowNode = backtraceNode.parentNode
                 val originalBacktraceNode = getOriginalNode(document, backtraceNode, originalNodeCache)
-                val backtraceId = originalBacktraceNode.getIdAttrValue()
 
-                val sampleTime = rowNode.childNodesSequence()
-                    .firstOrNull { n -> n.nodeName == SAMPLE_TIME_TAG }
-                    ?.let {
-                        getOriginalNode(document, it, originalNodeCache).getChildValue()?.toLong()
-                            ?.let { it / 1000 / 1000 }
-                    }
+                val sampleTime = rowNode.getFirstOriginalNodeByTag(document, timeTag, originalNodeCache)
+                    .asTimeValue()
                     ?: throw IllegalStateException(
-                        "$SAMPLE_TIME_TAG node with value not found for backtrace with id $backtraceId"
+                        "Cannot find $timeTag for:\n${backtraceNode.toXMLString(true)}"
                     )
 
-                val threadNode = rowNode.childNodesSequence()
-                    .firstOrNull { n -> n.nodeName == THREAD_TAG }
-                    ?.let {
-                        getOriginalNode(document, it, originalNodeCache)
-                    }
-                    ?: throw IllegalStateException(
-                        "$THREAD_TAG node not found for backtrace with id $backtraceId"
-                    )
+                val threadNode = rowNode.getFirstOriginalNodeByTag(document, THREAD_TAG, originalNodeCache)
 
-                // The expected time between samples
-                val weightMs = rowNode.childNodesSequence()
-                    .firstOrNull { n -> n.nodeName == WEIGHT_TAG }
-                    ?.let {
-                        getOriginalNode(document, it, originalNodeCache)
-                    }?.getChildValue()?.toLong()?.let { it / 1000 / 1000 }
-                    ?: throw IllegalStateException(
-                        "$WEIGHT_TAG node not found for backtrace with id $backtraceId"
-                    )
+                // The duration of the sample (Time Profile only)
+                val weightMs = rowNode.getOptionalFirstOriginalNodeByTag(document, WEIGHT_TAG, originalNodeCache)
+                    ?.asTimeValue()
+                    ?: 0.0
 
                 val threadName = threadNode.getFmtAttrValue() ?: "<unknown>"
 
-                val threadId = threadNode.childNodesSequence().first { it.nodeName == TID_TAG }
-                    .let {
-                        getOriginalNode(document, it, originalNodeCache).getChildValue()?.toIntOrNull()
-                    } ?: -1
+                val threadId = threadNode.getFirstOriginalNodeByTag(document, TID_TAG, originalNodeCache)
+                    .getChildValue()?.toIntOrNull() ?: -1
 
                 // There can be multiple text address "fragments"
                 // The first fragment contains addresses that are unique to this backtrace
@@ -228,41 +301,54 @@ object InstrumentsParser {
                             }
                         }
                     }
-                    .toList()
+                    .toMutableList()
 
-                val sample = InstrumentsSample(
+                // Append virtual memory operation onto callstack if it exists (e.g. Page Fault)
+                rowNode.getOptionalFirstOriginalNodeByTag(document, VM_OP_TAG, originalNodeCache)
+                    ?.getFmtAttrValue()
+                    ?.let { backtrace.add(0, SymbolEntry(VIRTUAL_MEMORY_ADDR, it)) }
+
+                InstrumentsSample(
                     thread = ThreadDescription(threadName, threadId),
                     sampleTime = sampleTime,
+                    weightMs = weightMs,
                     backtrace = backtrace,
                 )
+            }.toList()
+    }
 
-                // When off-cpu sampling is not enabled, callstack durations will be distorted as the callstack
-                // duration is computed as time since last collected sample.
-                // To address this, insert empty backtraces if the time since last sample exceeds
-                // the expected sample weight (i.e. sampling frequency).
-                //
-                // Ref: https://github.com/firefox-devtools/profiler/issues/2962#issuecomment-1480217402
-                timeSinceLastSample[threadId]?.let {
-                    timeSinceLastSample[threadId] = sampleTime
-                    val delta = sampleTime - it
-                    // Add an arbitrary buffer to avoid false positives where the expected gap between samples
-                    // is slightly off from actual
-                    if (delta > 5 * weightMs) {
-                        listOf(
-                            InstrumentsSample(
-                                thread = ThreadDescription(threadName, threadId),
-                                sampleTime = it + weightMs,
-                                backtrace = emptyList(),
-                            ),
-                            sample,
-                        )
-                    } else {
-                        listOf(sample)
-                    }
-                } ?: let {
-                    timeSinceLastSample[threadId] = sampleTime
-                    listOf(sample)
-                }
+    /**
+     * Convert Idle Thread State transitions into Instruments Samples
+     *
+     * Note: Samples may not be in-order. In some rare cases, Instruments returns out-of-order data.
+     */
+    fun loadIdleThreadSamples(input: Path, runNum: Int): List<InstrumentsSample> {
+        val document = queryXCTrace(input, "/trace-toc[1]/run[$runNum]/data[1]/table[@schema=\"thread-state\"]")
+        val originalNodeCache = mutableMapOf<String, Node>()
+        preloadTags(document, listOf(THREAD_STATE_TAG, START_TIME_TAG, THREAD_TAG, TID_TAG), originalNodeCache)
+
+        return document.getElementsByTagName(THREAD_STATE_TAG)
+            .asSequence()
+            .filter {
+                it.parentNode?.nodeName == ROW_TAG &&
+                        getOriginalNode(document, it, originalNodeCache).getIdAttrValue() == "Idle"
+            }.map { threadStateNode ->
+                val rowNode = threadStateNode.parentNode
+                val sampleTime = rowNode.getFirstOriginalNodeByTag(document, START_TIME_TAG, originalNodeCache)
+                    .asTimeValue()
+                    ?: throw IllegalStateException("row does not have start-time:\n${rowNode.toXMLString(true)}")
+
+                val threadNode = rowNode.getFirstOriginalNodeByTag(document, THREAD_TAG, originalNodeCache)
+                val threadName = threadNode.getFmtAttrValue() ?: "<unknown>"
+                val threadId = threadNode.getFirstOriginalNodeByTag(document, TID_TAG, originalNodeCache)
+                    .let { getOriginalNode(document, it, originalNodeCache).getChildValue()?.toIntOrNull() ?: -1 }
+
+                InstrumentsSample(
+                    thread = ThreadDescription(threadName, threadId),
+                    sampleTime = sampleTime,
+                    weightMs = 0.0,
+                    backtrace = emptyList()
+                )
             }.toList()
     }
 
@@ -276,12 +362,31 @@ object InstrumentsParser {
             shell = true
         )
 
+        return processXCTraceOutput(xmlStr)
+    }
+
+    /**
+     * Get the Table of Contents
+     *
+     * Note: It doesn't seem possible to use `--xpath` to query the TOC
+     */
+    private fun queryXCTraceTOC(input: Path): Document {
+        val xmlStr = ShellUtils.run(
+            "xctrace export --input $input --toc",
+            redirectOutput = ProcessBuilder.Redirect.PIPE,
+            shell = true
+        )
+
+        return processXCTraceOutput(xmlStr)
+    }
+
+    private fun processXCTraceOutput(xmlStr: String): Document {
         // Remove XML Prolog (<xml? ... >) since parser can't handle it
         val trimmedXmlStr = xmlStr.split("\n", limit = 2)[1]
 
-        val factory = DocumentBuilderFactory.newInstance()
-        val docBuilder = factory.newDocumentBuilder()
-        return docBuilder.parse(InputSource(StringReader(trimmedXmlStr)))
+        return DocumentBuilderFactory.newInstance()
+            .newDocumentBuilder()
+            .parse(InputSource(StringReader(trimmedXmlStr)))
     }
 
     /**
@@ -331,30 +436,82 @@ object InstrumentsParser {
             ?: throw IllegalStateException("No node with tag, $tag, and id, $id, found.")
     }
 
-    private fun Node.getFmtAttrValue(): String? = attributes?.getNamedItem("fmt")?.nodeValue
-
-    private fun Node.getIdAttrValue(): String? = attributes?.getNamedItem("id")?.nodeValue
-
-    private fun Node.getRefAttrValue(): String? = attributes?.getNamedItem("ref")?.nodeValue
-
-    private fun Node.getNameAttrValue(): String? = attributes?.getNamedItem("name")?.nodeValue
-
-    private fun Node.getAddrAttrValue(): String? = attributes?.getNamedItem("addr")?.nodeValue
-
-    private fun Node.getPathAttrValue(): String? = attributes?.getNamedItem("path")?.nodeValue
-
-    private fun Node.getLoadAddrAttrValue(): String? = attributes?.getNamedItem("load-addr")?.nodeValue
-
-    private fun Node.getUUIDAttrValue(): String? = attributes?.getNamedItem("UUID")?.nodeValue
-
-    private fun Node.getArchAttrValue(): String? = attributes?.getNamedItem("arch")?.nodeValue
+    // TODO: Remove the unnecessary utility methods?
+    private fun Node.getAttrValue(attr: String): String? = attributes?.getNamedItem(attr)?.nodeValue
+    private fun Node.getFmtAttrValue(): String? = getAttrValue("fmt")
+    private fun Node.getIdAttrValue(): String? = getAttrValue("id")
+    private fun Node.getRefAttrValue(): String? = getAttrValue("ref")
+    private fun Node.getNameAttrValue(): String? = getAttrValue("name")
+    private fun Node.getAddrAttrValue(): String? = getAttrValue("addr")
+    private fun Node.getPathAttrValue(): String? = getAttrValue("path")
+    private fun Node.getLoadAddrAttrValue(): String? = getAttrValue("load-addr")
+    private fun Node.getUUIDAttrValue(): String? = getAttrValue("UUID")
+    private fun Node.getArchAttrValue(): String? = getAttrValue("arch")
 
     private fun Node.getChildValue(): String? = firstChild?.nodeValue
+
+    private fun Node.asTimeValue(): Double? = firstChild?.nodeValue?.toDoubleOrNull()?.let { it / 1000.0 / 1000.0 }
 
     private fun Node.childNodesSequence(): Sequence<Node> = childNodes.asSequence()
 
     private fun NodeList.asSequence(): Sequence<Node> {
         var i = 0
         return generateSequence { item(i++) }
+    }
+
+    /**
+     * Find direct descendant with a matching tag then find it's original node if not already the original
+     */
+    private fun Node.getFirstOriginalNodeByTag(
+        document: Document,
+        tag: String,
+        originalNodeCache: MutableMap<String, Node>
+    ): Node {
+        return getOptionalFirstOriginalNodeByTag(document, tag, originalNodeCache)
+            ?: throw IllegalStateException("Could not find original node with tag, $tag:\n ${toXMLString(true)}")
+    }
+
+    private fun Node.getOptionalFirstOriginalNodeByTag(
+        document: Document,
+        tag: String,
+        originalNodeCache: MutableMap<String, Node>
+    ): Node? {
+        return this.childNodesSequence().firstOrNull { it.nodeName == tag }
+            ?.let { getOriginalNode(document, it, originalNodeCache) }
+    }
+
+    /**
+     * Convert node to pretty-printed XML String
+     *
+     * Ref: https://stackoverflow.com/questions/33935718/save-new-xml-node-to-file
+     */
+    private fun Node.toXMLString(deep: Boolean = false): String {
+        val clonedNode = this.cloneNode(true)
+        // Remove unwanted whitespaces
+        clonedNode.normalize()
+        val xpath = XPathFactory.newInstance().newXPath()
+        val expr = xpath.compile("//text()[normalize-space()='']")
+        val nodeList = expr.evaluate(clonedNode, XPathConstants.NODESET) as NodeList
+
+        if (!deep) {
+            for (i in 0 until nodeList.length) {
+                val node = nodeList.item(i)
+                node.parentNode.removeChild(node)
+            }
+        }
+
+        // Create and setup transformer
+        val transformer = TransformerFactory.newInstance().newTransformer().apply {
+            setOutputProperty(OutputKeys.ENCODING, "UTF-8")
+            setOutputProperty(OutputKeys.OMIT_XML_DECLARATION, "yes")
+            setOutputProperty(OutputKeys.INDENT, "yes")
+            setOutputProperty("{http://xml.apache.org/xslt}indent-amount", "4")
+        }
+
+        // Turn the node into a string
+        return StringWriter().use {
+            transformer.transform(DOMSource(this), StreamResult(it))
+            it.toString()
+        }
     }
 }
