@@ -146,17 +146,23 @@ object InstrumentsParser {
         // Map of thread ids to last sample time
         val timeSinceLastSample = mutableMapOf<Int, Long>()
 
+        val originalNodeCache = mutableMapOf<String, Node>()
+        preloadTags(document, listOf(BACKTRACE_TAG, SAMPLE_TIME_TAG, WEIGHT_TAG, THREAD_TAG, TID_TAG), originalNodeCache)
+
         val previousBacktraces = mutableMapOf<String, SymbolEntry>()
         return document.getElementsByTagName(BACKTRACE_TAG)
             .asSequence()
             .flatMap { backtraceNode ->
                 val rowNode = backtraceNode.parentNode
-                val originalBacktraceNode = getOriginalNode(document, backtraceNode)
+                val originalBacktraceNode = getOriginalNode(document, backtraceNode, originalNodeCache)
                 val backtraceId = originalBacktraceNode.getIdAttrValue()
 
                 val sampleTime = rowNode.childNodesSequence()
                     .firstOrNull { n -> n.nodeName == SAMPLE_TIME_TAG }
-                    ?.let { getOriginalNode(document, it).getChildValue()?.toLong()?.let { it / 1000 / 1000 } }
+                    ?.let {
+                        getOriginalNode(document, it, originalNodeCache).getChildValue()?.toLong()
+                            ?.let { it / 1000 / 1000 }
+                    }
                     ?: throw IllegalStateException(
                         "$SAMPLE_TIME_TAG node with value not found for backtrace with id $backtraceId"
                     )
@@ -164,7 +170,7 @@ object InstrumentsParser {
                 val threadNode = rowNode.childNodesSequence()
                     .firstOrNull { n -> n.nodeName == THREAD_TAG }
                     ?.let {
-                        getOriginalNode(document, it)
+                        getOriginalNode(document, it, originalNodeCache)
                     }
                     ?: throw IllegalStateException(
                         "$THREAD_TAG node not found for backtrace with id $backtraceId"
@@ -174,7 +180,7 @@ object InstrumentsParser {
                 val weightMs = rowNode.childNodesSequence()
                     .firstOrNull { n -> n.nodeName == WEIGHT_TAG }
                     ?.let {
-                        getOriginalNode(document, it)
+                        getOriginalNode(document, it, originalNodeCache)
                     }?.getChildValue()?.toLong()?.let { it / 1000 / 1000 }
                     ?: throw IllegalStateException(
                         "$WEIGHT_TAG node not found for backtrace with id $backtraceId"
@@ -184,7 +190,7 @@ object InstrumentsParser {
 
                 val threadId = threadNode.childNodesSequence().first { it.nodeName == TID_TAG }
                     .let {
-                        getOriginalNode(document, it).getChildValue()?.toIntOrNull()
+                        getOriginalNode(document, it, originalNodeCache).getChildValue()?.toIntOrNull()
                     } ?: -1
 
                 // There can be multiple text address "fragments"
@@ -278,7 +284,18 @@ object InstrumentsParser {
         return docBuilder.parse(InputSource(StringReader(trimmedXmlStr)))
     }
 
-    private fun getOriginalNode(document: Document, node: Node): Node {
+    /**
+     * XCTrace XML output avoids duplicating data by having teh first node contain all the information and subsequent
+     * nodes containing a reference to the original node.
+     *
+     * The original node is given a unique identifier using `id` attribute and the subsequent nodes use a
+     * `ref` attribute with the value set to the `id` of the original node.
+     *
+     * Scanning the XML is expensive os to reduce that cost an originalNodeCache is expected to be provided.
+     *
+     * Note: This method will mutate the originalNodeCache provided.
+     */
+    private fun getOriginalNode(document: Document, node: Node, originalNodeCache: MutableMap<String, Node>): Node {
         // If ID attribute exists, we are already at original node
         if (node.getIdAttrValue() != null) {
             return node
@@ -287,7 +304,24 @@ object InstrumentsParser {
         val refId = node.getRefAttrValue()?.toLongOrNull()
             ?: throw IllegalStateException("Node with tag, ${node.nodeName} does not have id or ref attribute")
 
-        return findNodeById(document, node.nodeName, refId)
+        val cacheKey = "${node.nodeName}:$refId"
+
+        originalNodeCache[cacheKey]?.let { return it }
+
+        return findNodeById(document, node.nodeName, refId).also {
+            originalNodeCache[cacheKey] = it
+        }
+    }
+
+    /**
+     * Pre-compute the set of ID nodes to avoid expensive re-processing of XML Tree Nodes
+     */
+    private fun preloadTags(node: Document, tags: List<String>, originalNodeCache: MutableMap<String, Node>) {
+        for (tag in tags) {
+            node.getElementsByTagName(tag)
+                .asSequence()
+                .forEach { it.getIdAttrValue()?.let { refId -> originalNodeCache["$tag:$refId"] = it } }
+        }
     }
 
     private fun findNodeById(node: Document, tag: String, id: Long): Node {

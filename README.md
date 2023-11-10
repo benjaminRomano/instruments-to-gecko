@@ -30,7 +30,3 @@ Options:
 # Convert Instruments trace to Gecko on the second run within the trace file
 java -jar ./build/libs/instruments-to-gecko.jar --input example.trace --run 2 --app YourApp --output examplestandalone.json.gz
 ```
-
-## Known Issues
-
-* Conversion may be slow on larger files. No performance optimizations have been done on the conversion yet.
