@@ -59,7 +59,7 @@ object GeckoGenerator {
     }
 
     fun createGeckoProfile(
-        app: String,
+        app: String?,
         samples: List<InstrumentsSample>,
         symbolsInfo: List<Library>,
         timeProfilerSettings: InstrumentsSettings,
@@ -177,14 +177,14 @@ object GeckoGenerator {
         )
     }
 
-    private fun getLibraryCategory(app: String, frame: SymbolEntry, library: String?): Int {
+    private fun getLibraryCategory(app: String?, frame: SymbolEntry, library: String?): Int {
         if (frame.address == VIRTUAL_MEMORY_ADDR) {
             return VIRTUAL_MEMORY_CATEGORY
         } else if (library == null) {
             return OTHER_CATEGORY
         }
         return when {
-            library.contains(app) -> USER_CATEGORY
+            app != null && library.contains(app) -> USER_CATEGORY
             library.contains("/System/Library/") -> FRAMEWORK_CATEGORY
             library.contains("/Symbols/usr/") -> LIBRARY_CATEGORY
             library.startsWith("/usr") -> LIBRARY_CATEGORY

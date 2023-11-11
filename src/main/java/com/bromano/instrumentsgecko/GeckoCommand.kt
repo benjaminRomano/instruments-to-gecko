@@ -20,8 +20,7 @@ class GeckoCommand : CliktCommand(help = "Convert Instruments Trace to Gecko For
         .path(mustExist = true, canBeDir = true)
         .required()
 
-    private val app by option("--app", help = "Name of app to match the dSyms to (e.g. YourApp)")
-        .required()
+    private val app by option("--app", help = "Name of app (e.g. YourApp)")
 
     private val runNum by option(
         "--run",
