@@ -1,8 +1,8 @@
 # Instruments To Gecko
 
-Convert an Instruments file into the Gecko Profile Format
+Convert an Instruments file into the Gecko Profile Format for use in Firefox Profiler ([example](https://profiler.firefox.com/public/w2teve8w5fp7tmpwycwhh6etrb3kr4f1ttyfyy8/flame-graph/?globalTrackOrder=0&hiddenLocalTracksByPid=0-7&thread=0&timelineType=category&v=10)).
 
-**Note: XCode 14.3 Beta or higher is required**
+![Stack Chart View](./docs/stack_chart.png)
 
 ## Usage
 
@@ -19,6 +19,8 @@ Options:
   -h, --help                Show this message and exit
 
 ```
+
+**Note: XCode 14.3 Beta or higher is required**
 
 **Example Command**
 
