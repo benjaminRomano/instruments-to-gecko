@@ -44,41 +44,22 @@ class GeckoCommand : CliktCommand(help = "Convert Instruments Trace to Gecko For
 
         val timeProfilerSettings = InstrumentsParser.getInstrumentsSettings(input, runNum)
 
-        // xctrace queries can be quite slow so parallelize them
+        // Load data sequentially
         Logger.timedLog("Loading Symbols, Samples and Load Addresses...") {
-            val thread1 = thread(start = true) {
-                samples = InstrumentsParser.loadSamples(TIME_PROFILE_SCHEMA, SAMPLE_TIME_TAG, input, runNum)
+            samples = InstrumentsParser.loadSamples(TIME_PROFILE_SCHEMA, SAMPLE_TIME_TAG, input, runNum)
+            loadedImageList = InstrumentsParser.sortedImageList(input, runNum)
+            
+            if (timeProfilerSettings.hasThreadStates) {
+                threadIdSamples = InstrumentsParser.loadIdleThreadSamples(input, runNum)
             }
-                .addUncaughtExceptionHandler()
-
-            val thread2 = thread(start = true) { loadedImageList = InstrumentsParser.sortedImageList(input, runNum) }
-                .addUncaughtExceptionHandler()
-
-            val thread3: Thread? = if (timeProfilerSettings.hasThreadStates) {
-                thread(start = true) { threadIdSamples = InstrumentsParser.loadIdleThreadSamples(input, runNum) }
-                    .addUncaughtExceptionHandler()
-            } else null
-
-            val thread4: Thread? = if (timeProfilerSettings.hasVirtualMemory) {
-                thread(start = true) {
-                    virtualMemorySamples =
-                        InstrumentsParser.loadSamples(VIRTUAL_MEMORY_SCHEMA, START_TIME_TAG, input, runNum)
-                }
-                    .addUncaughtExceptionHandler()
-            } else null
-
-            val thread5: Thread? = if (timeProfilerSettings.hasSyscalls) {
-                thread(start = true) {
-                    syscallSamples = InstrumentsParser.loadSamples(SYSCALL_SCHEMA, START_TIME_TAG, input, runNum)
-                }
-                    .addUncaughtExceptionHandler()
-            } else null
-
-            thread1.join()
-            thread2.join()
-            thread3?.join()
-            thread4?.join()
-            thread5?.join()
+            
+            if (timeProfilerSettings.hasVirtualMemory) {
+                virtualMemorySamples = InstrumentsParser.loadSamples(VIRTUAL_MEMORY_SCHEMA, START_TIME_TAG, input, runNum)
+            }
+            
+            if (timeProfilerSettings.hasSyscalls) {
+                syscallSamples = InstrumentsParser.loadSamples(SYSCALL_SCHEMA, START_TIME_TAG, input, runNum)
+            }
         }
 
         val concatenatedSamples =
