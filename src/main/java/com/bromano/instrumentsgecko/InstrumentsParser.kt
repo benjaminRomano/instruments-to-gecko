@@ -356,13 +356,20 @@ object InstrumentsParser {
      * Run a xpath query against a xctrace file and return an XML Document
      */
     private fun queryXCTrace(input: Path, xpath: String): Document {
-        val xmlStr = ShellUtils.run(
-            "xctrace export --input $input  --xpath '$xpath'",
+        // Use xcrun to ensure correct toolchain
+        val cmd = "xcrun xctrace export --input ${input.toAbsolutePath()} --xpath '$xpath'"
+
+        val result = ShellUtils.runWithRetries(
+            command = cmd,
+            ignoreErrors = false,
+            shell = true, // keep shell true because we use quoted xpath
             redirectOutput = ProcessBuilder.Redirect.PIPE,
-            shell = true
+            redirectError = ProcessBuilder.Redirect.PIPE,
+            retries = 5,
+            copyInputToTemp = true // copy trace to temp to mitigate file contention
         )
 
-        return processXCTraceOutput(xmlStr)
+        return processXCTraceOutput(result.stdout)
     }
 
     /**
@@ -371,13 +378,19 @@ object InstrumentsParser {
      * Note: It doesn't seem possible to use `--xpath` to query the TOC
      */
     private fun queryXCTraceTOC(input: Path): Document {
-        val xmlStr = ShellUtils.run(
-            "xctrace export --input $input --toc",
+        val cmd = "xcrun xctrace export --input ${input.toAbsolutePath()} --toc"
+
+        val result = ShellUtils.runWithRetries(
+            command = cmd,
+            ignoreErrors = false,
+            shell = true,
             redirectOutput = ProcessBuilder.Redirect.PIPE,
-            shell = true
+            redirectError = ProcessBuilder.Redirect.PIPE,
+            retries = 5,
+            copyInputToTemp = true
         )
 
-        return processXCTraceOutput(xmlStr)
+        return processXCTraceOutput(result.stdout)
     }
 
     private fun processXCTraceOutput(xmlStr: String): Document {
