@@ -380,7 +380,7 @@ object InstrumentsParser {
         return processXCTraceOutput(xmlStr)
     }
 
-        private fun processXCTraceOutput(xmlStr: String): Document {
+    private fun processXCTraceOutput(xmlStr: String): Document {
         // Remove XML Prolog (<xml? ... >) since parser can't handle it
         val trimmedXmlStr = xmlStr.split("\n", limit = 2)[1]
 
