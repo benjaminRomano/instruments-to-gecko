@@ -380,13 +380,55 @@ object InstrumentsParser {
         return processXCTraceOutput(xmlStr)
     }
 
-    private fun processXCTraceOutput(xmlStr: String): Document {
+        private fun processXCTraceOutput(xmlStr: String): Document {
         // Remove XML Prolog (<xml? ... >) since parser can't handle it
         val trimmedXmlStr = xmlStr.split("\n", limit = 2)[1]
 
-        return DocumentBuilderFactory.newInstance()
-            .newDocumentBuilder()
-            .parse(InputSource(StringReader(trimmedXmlStr)))
+        // Save original system properties
+        val originalProperties = mutableMapOf<String, String?>()
+        val securityProperties = listOf(
+            "jdk.xml.maxGeneralEntitySizeLimit",
+            "jdk.xml.maxParameterEntitySizeLimit", 
+            "jdk.xml.entityExpansionLimit",
+            "jdk.xml.elementAttributeLimit",
+            "jdk.xml.maxXMLNameLimit",
+            "jdk.xml.totalEntitySizeLimit"
+        )
+
+        try {
+            // Set system properties to disable limits
+            securityProperties.forEach { prop ->
+                originalProperties[prop] = System.getProperty(prop)
+                System.setProperty(prop, "0") // 0 means unlimited for most properties
+            }
+
+            val factory = DocumentBuilderFactory.newInstance()
+            // Try to set factory attributes as well (fallback)
+            try {
+                factory.setAttribute("jdk.xml.maxGeneralEntitySizeLimit", 0)
+                factory.setAttribute("jdk.xml.maxParameterEntitySizeLimit", 0)
+                factory.setAttribute("jdk.xml.entityExpansionLimit", 0)
+                factory.setAttribute("jdk.xml.elementAttributeLimit", 0)
+                factory.setAttribute("jdk.xml.maxXMLNameLimit", 0)
+                factory.setAttribute("jdk.xml.totalEntitySizeLimit", 0)
+            } catch (e: IllegalArgumentException) {
+                // Some attributes might not be supported, continue anyway
+            }
+            
+            return factory
+                .newDocumentBuilder()
+                .parse(InputSource(StringReader(trimmedXmlStr)))
+        } finally {
+            // Restore original system properties
+            securityProperties.forEach { prop ->
+                val originalValue = originalProperties[prop]
+                if (originalValue != null) {
+                    System.setProperty(prop, originalValue)
+                } else {
+                    System.clearProperty(prop)
+                }
+            }
+        }
     }
 
     /**
