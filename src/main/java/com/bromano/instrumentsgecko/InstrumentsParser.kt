@@ -384,11 +384,7 @@ object InstrumentsParser {
         // Remove XML Prolog (<xml? ... >) since parser can't handle it
         val trimmedXmlStr = xmlStr.split("\n", limit = 2)[1]
 
-        val factory = DocumentBuilderFactory.newInstance()
-        // Note: XML security properties are configured at application startup
-        // in main() to allow parsing of large trace files
-        
-        return factory
+        return DocumentBuilderFactory.newInstance()
             .newDocumentBuilder()
             .parse(InputSource(StringReader(trimmedXmlStr)))
     }
