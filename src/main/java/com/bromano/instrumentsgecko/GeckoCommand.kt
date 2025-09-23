@@ -9,7 +9,32 @@ import com.github.ajalt.clikt.parameters.types.path
 import kotlin.concurrent.thread
 import kotlin.system.exitProcess
 
-fun main(args: Array<String>) = GeckoCommand().main(args)
+fun main(args: Array<String>) {
+    // Configure XML security properties once at application startup
+    // to handle large Instruments trace files without entity size limits
+    configureXMLSecurityProperties()
+    
+    GeckoCommand().main(args)
+}
+
+/**
+ * Configure XML security properties to disable entity size limits.
+ * This allows parsing of large Instruments trace files that exceed default XML security limits.
+ */
+private fun configureXMLSecurityProperties() {
+    val xmlSecurityProperties = mapOf(
+        "jdk.xml.maxGeneralEntitySizeLimit" to "0",
+        "jdk.xml.maxParameterEntitySizeLimit" to "0", 
+        "jdk.xml.entityExpansionLimit" to "0",
+        "jdk.xml.elementAttributeLimit" to "0",
+        "jdk.xml.maxXMLNameLimit" to "0",
+        "jdk.xml.totalEntitySizeLimit" to "0"
+    )
+    
+    xmlSecurityProperties.forEach { (property, value) ->
+        System.setProperty(property, value)
+    }
+}
 
 class GeckoCommand : CliktCommand(help = "Convert Instruments Trace to Gecko Format (Firefox Profiler)") {
 
