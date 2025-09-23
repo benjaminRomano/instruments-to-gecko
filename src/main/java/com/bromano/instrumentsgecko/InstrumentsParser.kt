@@ -365,8 +365,7 @@ object InstrumentsParser {
             shell = true, // keep shell true because we use quoted xpath
             redirectOutput = ProcessBuilder.Redirect.PIPE,
             redirectError = ProcessBuilder.Redirect.PIPE,
-            retries = 5,
-            copyInputToTemp = true // copy trace to temp to mitigate file contention
+            retries = 5
         )
 
         return processXCTraceOutput(result.stdout)
@@ -386,8 +385,7 @@ object InstrumentsParser {
             shell = true,
             redirectOutput = ProcessBuilder.Redirect.PIPE,
             redirectError = ProcessBuilder.Redirect.PIPE,
-            retries = 5,
-            copyInputToTemp = true
+            retries = 5
         )
 
         return processXCTraceOutput(result.stdout)

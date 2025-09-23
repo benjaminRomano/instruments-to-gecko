@@ -1,9 +1,6 @@
 package com.bromano.instrumentsgecko
 
 import com.github.ajalt.clikt.core.CliktError
-import java.io.File
-import java.nio.file.Files
-import java.nio.file.Path
 import kotlin.concurrent.thread
 
 data class RunResult(val stdout: String, val stderr: String, val exitCode: Int)
@@ -13,9 +10,6 @@ data class RunResult(val stdout: String, val stderr: String, val exitCode: Int)
  */
 class ShellUtils {
     companion object {
-        // single lock to serialize xctrace/xcrun calls to reduce contention
-        private val xctraceLock = Any()
-
         /**
          * Backwards-compatible run: returns stdout when redirectOutput is PIPE.
          * Internally uses runWithRetries with default params.
@@ -33,13 +27,12 @@ class ShellUtils {
                 shell = shell,
                 redirectOutput = redirectOutput,
                 redirectError = redirectError,
-                retries = 3,
-                copyInputToTemp = false,
+                retries = 3
             )
 
             if (!ignoreErrors && res.exitCode != 0) {
                 val err = res.stderr.trim()
-                throw CliktError("Command failed: ${"$command\n$err"}")
+                throw CliktError("Command failed: $command\n$err")
             }
 
             return if (redirectOutput == ProcessBuilder.Redirect.PIPE) {
@@ -50,9 +43,9 @@ class ShellUtils {
         }
 
         /**
-         * Robust runner with retries, backoff, optional copy-to-temp and serialization of xctrace.
+         * Robust runner with retries and backoff for transient failures.
          * - command: full command string OR a single program if shell=false
-         * - shell: if true, runs via /bin/bash -c; recommended false for list-style commands (we use shell=false for xcrun)
+         * - shell: if true, runs via /bin/bash -c; recommended false for list-style commands
          */
         fun runWithRetries(
             command: String,
@@ -61,7 +54,6 @@ class ShellUtils {
             redirectOutput: ProcessBuilder.Redirect = ProcessBuilder.Redirect.PIPE,
             redirectError: ProcessBuilder.Redirect = ProcessBuilder.Redirect.PIPE,
             retries: Int = 5,
-            copyInputToTemp: Boolean = false,
             retryableExitCodes: Set<Int> = setOf(139, 1),
             baseBackoffMs: Long = 200L
         ): RunResult {
@@ -71,31 +63,15 @@ class ShellUtils {
             while (attempt < retries) {
                 attempt++
 
-                val effectiveCommand = if (copyInputToTemp) {
-                    try {
-                        copyTraceInCommandToTemp(command)
-                    } catch (_: Exception) {
-                        command
-                    }
-                } else command
-
-                val shouldSerialize = effectiveCommand.contains("xctrace") || effectiveCommand.contains("xcrun xctrace")
-
-                val res = if (shouldSerialize) {
-                    synchronized(xctraceLock) {
-                        runRaw(effectiveCommand, shell, redirectOutput, redirectError)
-                    }
-                } else {
-                    runRaw(effectiveCommand, shell, redirectOutput, redirectError)
-                }
-
+                val res = runRaw(command, shell, redirectOutput, redirectError)
+                
                 // To log exit code and stderr
-                // if (res.exitCode != 0) {
-                //    println("❌ Command failed with exit code: ${res.exitCode}")
-                //    if (res.stderr.isNotBlank()) {
-                //        println("Stderr: ${res.stderr.trim()}")
-                //    }
-                // }
+                if (res.exitCode != 0) {
+                    println("❌ Command failed with exit code: ${res.exitCode}")
+                    if (res.stderr.isNotBlank()) {
+                        println("Stderr: ${res.stderr.trim()}")
+                    }
+                }
 
                 if (res.exitCode == 0 || (!checkExitCode(ignoreErrors, res.exitCode))) {
                     return res
@@ -108,13 +84,12 @@ class ShellUtils {
                     continue
                 }
 
-                if (!ignoreErrors) throw CliktError("Command failed: $effectiveCommand\n${res.stderr}")
+                if (!ignoreErrors) throw CliktError("Command failed: $command\n${res.stderr}")
                 return res
             }
 
             throw CliktError("Command failed after $retries attempts: $command\n$lastErr")
         }
-
 
         private fun checkExitCode(ignoreErrors: Boolean, exitCode: Int): Boolean {
             return !(ignoreErrors || exitCode == 0)
@@ -170,45 +145,6 @@ class ShellUtils {
 
         private fun splitCommand(cmd: String): Array<String> {
             return cmd.split(' ').filter { it.isNotEmpty() }.toTypedArray()
-        }
-
-        private fun copyTraceInCommandToTemp(command: String): String {
-            val tokens = command.split(' ')
-            val idx = tokens.indexOf("--input")
-            if (idx == -1 || idx + 1 >= tokens.size) return command
-
-            val original = tokens[idx + 1]
-            val originalPath = Path.of(original)
-            if (!Files.exists(originalPath)) return command
-
-            val tmp = Files.createTempDirectory("trace-copy-")
-            tmp.toFile().deleteOnExit()
-
-            val dest = tmp.resolve(originalPath.fileName)
-            if (Files.isDirectory(originalPath)) {
-                originalPath.toFile().copyRecursively(dest.toFile(), overwrite = true)
-            } else {
-                Files.copy(originalPath, dest)
-            }
-            dest.toFile().deleteOnExit()
-
-            val newTokens = tokens.toMutableList()
-            newTokens[idx + 1] = dest.toAbsolutePath().toString()
-            return newTokens.joinToString(" ")
-        }
-
-        private fun java.io.File.copyRecursively(target: java.io.File, overwrite: Boolean) {
-            if (this.isDirectory) {
-                if (!target.exists()) target.mkdirs()
-                this.listFiles()?.forEach { child ->
-                    File(target, child.name).let { tgt ->
-                        child.copyRecursively(tgt, overwrite)
-                    }
-                }
-            } else {
-                if (target.exists() && !overwrite) return
-                this.inputStream().use { input -> target.outputStream().use { it.write(input.readAllBytes()) } }
-            }
         }
     }
 }
