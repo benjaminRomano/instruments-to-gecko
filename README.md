@@ -1,5 +1,12 @@
 # Instruments To Gecko
 
+> **Deprecated:** Active development moved to [`mperf`](https://github.com/benjaminRomano/mperf). Prefer running:
+>
+> ```bash
+> iperf convert --app YourApp -i example.trace --run 2 --output example.json.gz
+> ```
+
+
 Convert an Instruments file into the Gecko Profile Format for use in Firefox Profiler ([example](https://profiler.firefox.com/public/w2teve8w5fp7tmpwycwhh6etrb3kr4f1ttyfyy8/flame-graph/?globalTrackOrder=0&hiddenLocalTracksByPid=0-7&thread=0&timelineType=category&v=10)).
 
 ![Stack Chart View](./docs/stack_chart.png)
