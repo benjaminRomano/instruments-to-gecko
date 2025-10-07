@@ -11,8 +11,8 @@ data class RunResult(val stdout: String, val stderr: String, val exitCode: Int)
 class ShellUtils {
     companion object {
         /**
-         * Backwards-compatible run: returns stdout when redirectOutput is PIPE.
-         * Internally uses runWithRetries with default params.
+         * Simple one-shot run (NO retries by default now).
+         * Returns stdout only when redirectOutput == PIPE, else empty string.
          */
         fun run(
             command: String,
@@ -21,14 +21,7 @@ class ShellUtils {
             redirectOutput: ProcessBuilder.Redirect = ProcessBuilder.Redirect.INHERIT,
             redirectError: ProcessBuilder.Redirect = ProcessBuilder.Redirect.INHERIT,
         ): String {
-            val res = runWithRetries(
-                command = command,
-                ignoreErrors = ignoreErrors,
-                shell = shell,
-                redirectOutput = redirectOutput,
-                redirectError = redirectError,
-                retries = 3
-            )
+            val res = runRaw(command, shell, redirectOutput, redirectError)
 
             if (!ignoreErrors && res.exitCode != 0) {
                 val err = res.stderr.trim()
@@ -43,9 +36,12 @@ class ShellUtils {
         }
 
         /**
-         * Robust runner with retries and backoff for transient failures.
-         * - command: full command string OR a single program if shell=false
-         * - shell: if true, runs via /bin/bash -c; recommended false for list-style commands
+         * Backwards-compatible retrying runner using withRetry.
+         *
+         * Note: 'retries' still means TOTAL attempts (was previous behavior).
+         * So retries=5 => up to 5 executions; internally mapped to retryCount = retries - 1.
+         *
+         * If ignoreErrors = true, this executes only once (no retries), same as legacy behavior.
          */
         fun runWithRetries(
             command: String,
@@ -54,45 +50,44 @@ class ShellUtils {
             redirectOutput: ProcessBuilder.Redirect = ProcessBuilder.Redirect.PIPE,
             redirectError: ProcessBuilder.Redirect = ProcessBuilder.Redirect.PIPE,
             retries: Int = 5,
-            retryableExitCodes: Set<Int> = setOf(139, 1),
-            baseBackoffMs: Long = 200L
+            retryableExitCodes: Set<Int> = setOf(139),
+            baseBackoffMs: Long = 200L,
+            maxBackoffMs: Long? = null,
+            jitterFraction: Double = 0.2
         ): RunResult {
-            var attempt = 0
-            var lastErr = ""
+            require(retries >= 1) { "retries must be >= 1 (represents total attempts)" }
 
-            while (attempt < retries) {
-                attempt++
-
+            if (ignoreErrors) {
                 val res = runRaw(command, shell, redirectOutput, redirectError)
-                
-                // To log exit code and stderr
                 if (res.exitCode != 0) {
                     println("❌ Command failed with exit code: ${res.exitCode}")
-                    if (res.stderr.isNotBlank()) {
-                        println("Stderr: ${res.stderr.trim()}")
-                    }
+                    if (res.stderr.isNotBlank()) println("Stderr: ${res.stderr.trim()}")
                 }
-
-                if (res.exitCode == 0 || (!checkExitCode(ignoreErrors, res.exitCode))) {
-                    return res
-                }
-
-                lastErr = res.stderr
-                if (res.exitCode in retryableExitCodes && attempt < retries) {
-                    Thread.sleep(baseBackoffMs * (1 shl (attempt - 1)).coerceAtMost(10))
-                    // retry loop continues
-                    continue
-                }
-
-                if (!ignoreErrors) throw CliktError("Command failed: $command\n${res.stderr}")
                 return res
             }
 
-            throw CliktError("Command failed after $retries attempts: $command\n$lastErr")
-        }
-
-        private fun checkExitCode(ignoreErrors: Boolean, exitCode: Int): Boolean {
-            return !(ignoreErrors || exitCode == 0)
+            return withRetry(
+                retryCount = retries - 1,
+                exponentialBackoffMs = baseBackoffMs,
+                maxBackoffMs = maxBackoffMs,
+                jitterFraction = jitterFraction,
+                retryOn = { t ->
+                    t is CommandExecutionException && t.exitCode in retryableExitCodes
+                }
+            ) {
+                val res = runRaw(command, shell, redirectOutput, redirectError)
+                if (res.exitCode != 0) {
+                    println("❌ Command failed with exit code: ${res.exitCode}")
+                    if (res.stderr.isNotBlank()) println("Stderr: ${res.stderr.trim()}")
+                    throw CommandExecutionException(
+                        command = command,
+                        exitCode = res.exitCode,
+                        stdout = res.stdout,
+                        stderr = res.stderr
+                    )
+                }
+                res
+            }
         }
 
         private fun runRaw(

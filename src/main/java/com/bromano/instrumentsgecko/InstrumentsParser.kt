@@ -356,7 +356,6 @@ object InstrumentsParser {
      * Run a xpath query against a xctrace file and return an XML Document
      */
     private fun queryXCTrace(input: Path, xpath: String): Document {
-        // Use xcrun to ensure correct toolchain
         val cmd = "xcrun xctrace export --input ${input.toAbsolutePath()} --xpath '$xpath'"
 
         val result = ShellUtils.runWithRetries(
