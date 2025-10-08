@@ -37,7 +37,7 @@ const val SYSCALL_SCHEMA = "syscall"
 
 private const val XCTRACE_RETRY_DELAY_MS = 500L
 
-// SIGSEV exit code. XCTrace periodically fails with transient errors
+// SIGSEV exit code. XCTrace can transiently fail with this exit code
 private const val SIGSEV_EXIT_CODE = 139
 
 private const val NUMBER_ATTR = "number"
@@ -383,7 +383,7 @@ object InstrumentsParser {
     private fun queryXCTraceTOC(input: Path): Document {
         val xmlStr = withRetry(
             delayMillis = XCTRACE_RETRY_DELAY_MS,
-            shouldRetry = { (it as? ShellCommandException)?.exitCode == SIGSEV_EXIT_CODE }
+            shouldRetry = { (it as? ShellCommandException)?.exitCode == 10 }
         ) {
             ShellUtils.run(
                 "xctrace export --input $input --toc",
