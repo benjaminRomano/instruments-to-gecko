@@ -383,7 +383,7 @@ object InstrumentsParser {
     private fun queryXCTraceTOC(input: Path): Document {
         val xmlStr = withRetry(
             delayMillis = XCTRACE_RETRY_DELAY_MS,
-            shouldRetry = { (it as? ShellCommandException)?.exitCode == 10 }
+            shouldRetry = { (it as? ShellCommandException)?.exitCode == SIGSEV_EXIT_CODE }
         ) {
             ShellUtils.run(
                 "xctrace export --input $input --toc",
