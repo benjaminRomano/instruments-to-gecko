@@ -368,6 +368,7 @@ object InstrumentsParser {
             ShellUtils.run(
                 "xctrace export --input $input --xpath '$xpath'",
                 redirectOutput = ProcessBuilder.Redirect.PIPE,
+                redirectError = ProcessBuilder.Redirect.PIPE,
                 shell = true
             )
         }
@@ -388,6 +389,7 @@ object InstrumentsParser {
             ShellUtils.run(
                 "xctrace export --input $input --toc",
                 redirectOutput = ProcessBuilder.Redirect.PIPE,
+                redirectError = ProcessBuilder.Redirect.PIPE,
                 shell = true
             )
         }

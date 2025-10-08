@@ -57,6 +57,7 @@ class ShellUtils {
             val exitCode = proc.waitFor()
 
             if (exitCode != 0 && !ignoreErrors) {
+                // Note: This is only populated with `ProcessBuilder.Redirect.PIPE`
                 val error = proc.errorStream.bufferedReader().readText().trim()
                 throw ShellCommandException(command, exitCode, error)
             }
