@@ -1,7 +1,5 @@
 package com.bromano.instrumentsgecko
 
-import com.github.ajalt.clikt.core.CliktError
-import java.awt.Color.red
 import java.io.InputStream
 
 /**
@@ -59,9 +57,16 @@ class ShellUtils {
             val exitCode = proc.waitFor()
 
             if (exitCode != 0 && !ignoreErrors) {
+                // Note: This is only populated with `ProcessBuilder.Redirect.PIPE`
                 val error = proc.errorStream.bufferedReader().readText().trim()
-                throw CliktError("Command failed: ${"$command\n$error"}")
+                throw ShellCommandException(command, exitCode, error)
             }
         }
     }
 }
+
+class ShellCommandException(
+    command: String,
+    val exitCode: Int,
+    stderr: String
+) : RuntimeException("Command, `$command`, failed with exit code $exitCode: $stderr")
